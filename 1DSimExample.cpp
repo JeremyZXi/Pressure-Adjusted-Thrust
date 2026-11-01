@@ -13,16 +13,22 @@ int main() {
     std::cout << "================================\n" << std::endl;
 
     try {
-        // Pressure-correction inputs.
-        // Adopted E3 sizing-model exit diameter (not a verified as-built dimension).
+        // atmosphere pressure-correction inputs.
+        // Adopted E3 sizing-model exit diameter (not verified).
         const double nozzleExitDiameter = 0.1241;  // m
         const double nozzleExitArea = 3.141592653589793
             * nozzleExitDiameter * nozzleExitDiameter / 4.0;  // m^2
         // Assumes the original thrust curve is referenced to standard sea level.
         const double referencePressure = 101325.0;  // Pa
 
-        // example linear tank-pressure/thrust model; 0.0 disables tank loss.
-        const double tankPressureDropFraction = 0.2;
+
+
+
+        const bool useAdiabaticTank =true; //indicator to disable/enable pressure tank
+        //Jeremy Zhang: I totally made these up
+        const double tankVolume = 65.0 / 1000.0;    // m^3
+        const double initialTankTemperature = 20.0 + 273.15; // K
+        const double gasExponent = 1.3; // Assumed constant gas-tail exponent (>1)
 
         // E3 example flight
         std::cout << "Setting up example rocket..." << std::endl;
@@ -45,8 +51,11 @@ int main() {
         Rocket rocket(46.7, 2.33, aeroData, engine);
 
         std::cout << "Running simulation..." << std::endl;
-        FlightSim sim(rocket, 0.01, 15.0, nozzleExitArea, referencePressure,
-                      tankPressureDropFraction, propMass.front(), thrustTime.front());  // 0.01s timestep, 15m rail
+        FlightSim sim(rocket, 0.01, 15.0, nozzleExitArea, referencePressure);  // 0.01s timestep, 15m rail
+        if (useAdiabaticTank) {
+            sim.configureAdiabaticTank(tankVolume, initialTankTemperature,
+                                       thrustTime, propMass, gasExponent);
+        }
         FlightData data = sim.run();
 
         data.exportToCSV("flight_data.csv");

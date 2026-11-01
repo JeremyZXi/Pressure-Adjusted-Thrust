@@ -7,6 +7,8 @@
 #include "Rocket.h"
 #include "Atmosphere.h"
 #include "FlightData.h"
+#include "tank.h"
+#include <string>
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -19,26 +21,32 @@ private:
     double nozzleExitArea;     // Nozzle exit area (m^2), not aerodynamic reference area
     double referencePressure;  // Ambient pressure of the supplied thrust curve (Pa)
 
-    double tankPressureDropFraction;
-    double initialPropellantMass;
-    double ignitionTime;
+    std::vector<double> tankHistoryTimes;
+    std::vector<double> tankHistoryRatios;
+    Interpolator1D tankHistory;
 
     double getTankPressureRatio(double time) const {
-        // The propellant curve returns zero before ignition: treat the tank as full then.
-        if (time < ignitionTime) return 1.0;
-
-        const double remaining = rocket.getMass(time) - rocket.getDryMass();
-        const double fill = std::max(0.0, std::min(1.0, remaining / initialPropellantMass));
-        return 1.0 - tankPressureDropFraction * (1.0 - fill);
+        if (!tankHistoryTimes.empty()) {
+            if (time <= tankHistoryTimes.front()) return 1.0;
+            if (time >= tankHistoryTimes.back()) return tankHistoryRatios.back();
+            return tankHistory.interpolate(time);
+        }
+        // No tank correction unless an equilibrium history is configured.
+        return 1.0;
     }
 
     double getAdjustedThrust(double time, double ambientPressure) const {
         const double baseThrust = rocket.getThrust(time);
         // The supplied curve uses positive thrust to identify the active burn.
         if (baseThrust <= 0.0) return 0.0;
+        if (!tankHistoryTimes.empty() && time > tankHistoryTimes.back()) {
+            throw std::domain_error("Active thrust extends beyond valid tank history");
+        }
         // Exploratory assumption: reference-pressure thrust scales with tank pressure.
         // Assumes the baseline curve does not already include this pressure loss.
-        const double thrust = baseThrust * getTankPressureRatio(time)
+        const double pressureRatio = getTankPressureRatio(time);
+        if (pressureRatio <= 0.0) return 0.0;
+        const double thrust = baseThrust * pressureRatio
             + (referencePressure - ambientPressure) * nozzleExitArea;
         return thrust > 0.0 ? thrust : 0.0;
     }
@@ -146,23 +154,75 @@ private:
 
 public:
     FlightSim(const Rocket& rocket_, double dt_, double railLength_,
-              double nozzleExitArea_, double referencePressure_,
-              double tankPressureDropFraction_ = 0.0,
-              double initialPropellantMass_ = 1.0, double ignitionTime_ = 0.0)
+              double nozzleExitArea_, double referencePressure_)
         : rocket(rocket_), dt(dt_), railLength(railLength_),
-          nozzleExitArea(nozzleExitArea_), referencePressure(referencePressure_),
-          tankPressureDropFraction(tankPressureDropFraction_),
-          initialPropellantMass(initialPropellantMass_), ignitionTime(ignitionTime_) {
-        if (!std::isfinite(tankPressureDropFraction) || tankPressureDropFraction < 0.0 ||
-            tankPressureDropFraction > 1.0 || !std::isfinite(initialPropellantMass) ||
-            initialPropellantMass <= 0.0 || !std::isfinite(ignitionTime) || ignitionTime < 0.0) {
-            throw std::invalid_argument("Require pressure-drop fraction in [0,1], positive initial propellant mass, and nonnegative ignition time");
-        }
+          nozzleExitArea(nozzleExitArea_), referencePressure(referencePressure_) {
         if (!std::isfinite(dt) || dt <= 0.0 ||
             !std::isfinite(nozzleExitArea) || nozzleExitArea < 0.0 ||
             !std::isfinite(referencePressure) || referencePressure < 0.0) {
             throw std::invalid_argument("Require positive timestep and nonnegative finite area/pressure");
         }
+    }
+
+    // Precompute from the supplied N2O mass curve; force evaluations only look up
+    // ratios, so RK4 never advances tank state multiple times per timestep.
+    // This mode retains the existing approximate pressure-to-thrust scaling.
+    void configureAdiabaticTank(double volume, double initialTemperature,
+                               const std::vector<double>& times,
+                               const std::vector<double>& masses,
+                               double gasExponent = 1.3) {
+        if (times.size() < 2 || times.size() != masses.size()) {
+            throw std::invalid_argument("Tank mass curve requires matching time/mass points");
+        }
+        for (std::size_t i = 0; i < times.size(); i++) {
+            if (!std::isfinite(times[i]) || times[i] < 0.0 ||
+                !std::isfinite(masses[i]) || masses[i] < 0.0) {
+                throw std::invalid_argument("Invalid tank mass curve value");
+            }
+            if (i > 0 && (times[i] <= times[i - 1] || masses[i] > masses[i - 1])) {
+                throw std::invalid_argument("Tank times must increase and masses must not increase");
+            }
+            const double rocketMass = rocket.getMass(times[i]) - rocket.getDryMass();
+            if (std::abs(rocketMass - masses[i]) > 1e-8 * std::max(1.0, masses[i])) {
+                throw std::invalid_argument("Tank mass curve must match engine propellant mass curve");
+            }
+        }
+        tank oxidizerTank(volume, masses.front(), initialTemperature, gasExponent);
+        std::vector<double> historyTimes;
+        std::vector<double> historyRatios;
+        historyTimes.push_back(times.front());
+        historyRatios.push_back(1.0);
+        // Resolve each original mass-curve segment, including short plateaus.
+        for (std::size_t segment = 1; segment < times.size(); segment++) {
+            const double duration = times[segment] - times[segment - 1];
+            const double count = std::ceil(duration / dt);
+            if (!std::isfinite(count) || count > 1000000.0) {
+                throw std::invalid_argument("Tank history exceeds one million steps per segment");
+            }
+            const int steps = static_cast<int>(count);
+            for (int step = 1; step <= steps; step++) {
+                const double fraction = static_cast<double>(step) / steps;
+                const double time = times[segment - 1] + duration * fraction;
+                double mass = masses[segment - 1]
+                    + fraction * (masses[segment] - masses[segment - 1]);
+                if (step == steps) {
+                    mass = masses[segment];
+                }
+                try {
+                    oxidizerTank.advanceToMass(mass);
+                } catch (const std::exception& error) {
+                    throw std::runtime_error("Tank history failed at t=" + std::to_string(time)
+                        + " s, remaining N2O=" + std::to_string(mass) + " kg: " + error.what()
+                        + ". Check tank inputs, saturation-property bounds and gas exponent.");
+                }
+                historyTimes.push_back(time);
+                historyRatios.push_back(oxidizerTank.getPressureRatio());
+            }
+        }
+        // Commit only after the whole history has been computed successfully.
+        tankHistory = Interpolator1D(historyTimes, historyRatios);
+        tankHistoryTimes = historyTimes;
+        tankHistoryRatios = historyRatios;
     }
 
     // Run the simulation
