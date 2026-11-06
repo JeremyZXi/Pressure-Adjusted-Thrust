@@ -1,0 +1,107 @@
+"""Engine inputs. EVERYTHING here is an input; nothing is hard-coded elsewhere.
+
+Defaults = Eureka Spaceshot CF ablative engine: N2O / IPA, IPA fed by a piston
+that the N2O gas pushes. I FOUND THIS INFO FROM THE SEB WIKI ON 10/21:
+  [RPA]    Spaceshot CF Ablative Engine page: RPA run of 8/16/26 ("The Final one")
+  [CFENG]  Spaceshot CF Ablative Engine page: CF tank ID 7.764 in, propellants IPA + NOS
+  [TANK]   [E-3] CF Tank Testing: MEOP 600 psi, N2O fill equalized at 600 psi
+  [PISTON] Eureka-3 Piston / IPA Tank / Downcomer pages: piston "pressurizes the fuel by
+           pushing down on the liquid from nitrous gas pressure", tank "sized for O:F of 4"
+
+!! TBD values are NOT on the wiki. They are placeholders. Get real numbers from
+!! Propulsion before trusting burn time, total impulse or apogee.
+"""
+from dataclasses import dataclass
+import math
+from typing import Optional
+
+PSI = 6894.757  # Pa
+
+
+@dataclass
+class EngineConfig:
+    # --- Architecture ---
+    fuel_feed: str = 'piston'              # 'piston' [PISTON] or 'regulated'
+
+    # --- Oxidizer: self-pressurizing N2O ---
+    ox_fill_pressure: float = 600 * PSI    # Pa [TANK]; sets the starting temperature
+    ox_mass: float = 54.0                  # kg  TBD (placeholder = 10 s at the RPA N2O flow)
+    ox_ullage_fraction: float = 0.10       # vapor share of N2O tank volume at fill  TBD
+    ox_tank_volume: Optional[float] = None # m^3; None -> computed from mass + ullage
+    tank_inner_diameter: float = 0.1972    # m [CFENG]; only used to report tank lengths
+
+    # --- Fuel: IPA ---
+    fuel_mass: float = 12.0                # kg  TBD (placeholder = ox_mass / 4.5)
+    fuel_density: float = 786.0            # kg/m^3, IPA near 20 C
+    piston_dp: float = 0.0                 # Pa lost to piston seal friction  TBD
+    fuel_pressure: float = 600 * PSI       # Pa, only used when fuel_feed == 'regulated'
+
+    # --- Injectors (Cd * total orifice area) ---
+    # Not on the wiki. None -> calibrated so the engine hits the RPA design point
+    # (design_mdot at design_OF) at ignition. Replace with measured CdA from cold flows.
+    CdA_ox: Optional[float] = None         # m^2
+    CdA_fuel: Optional[float] = None       # m^2
+    design_mdot: float = 6.6               # kg/s [RPA]
+    design_OF: float = 4.5                 # [RPA]
+
+    # --- Chamber and nozzle [RPA] ---
+    throat_diameter: float = 0.07286       # m (Dt = 72.86 mm)
+    expansion_ratio: float = 5.53          # Ae/At (De = 171.38 mm)
+    c_star_ideal: float = 1544.8           # m/s, ideal characteristic velocity at O/F 4.5
+    c_star_efficiency: float = 0.974       # RPA "reaction efficiency"
+    gamma: float = 1.25                    # effective nozzle exponent: reproduces RPA's ideal
+                                           # sea-level C_F (1.4098) and exit pressure (~0.6 atm).
+                                           # (RPA chamber gamma is 1.186; the shifting-equilibrium
+                                           # expansion behaves like a higher gamma.)
+    cf_efficiency: float = 0.969           # fit: sea-level thrust at design = RPA delivered 13.56 kN
+
+    @property
+    def throat_area(self):
+        return math.pi * self.throat_diameter ** 2 / 4.0
+
+    @property
+    def exit_area(self):
+        return self.throat_area * self.expansion_ratio
+
+    @property
+    def c_star(self):
+        return self.c_star_ideal * self.c_star_efficiency
+
+
+# ---------- quantities derived from the inputs (need N2O properties) ----------
+
+def ox_initial_temperature(cfg, props):
+    """Saturated N2O: fill pressure fixes the temperature."""
+    return props.T_from_P(cfg.ox_fill_pressure)
+
+
+def ox_tank_volume(cfg, props):
+    """N2O tank volume at fill. If not given, size it from mass and ullage fraction:
+    V = M / ((1 - phi) * rho_l + phi * rho_v)."""
+    if cfg.ox_tank_volume is not None:
+        return cfg.ox_tank_volume
+    T0 = ox_initial_temperature(cfg, props)
+    phi = cfg.ox_ullage_fraction
+    return cfg.ox_mass / ((1 - phi) * props('rho_l', T0) + phi * props('rho_v', T0))
+
+
+def injector_CdA(cfg, props):
+    """(CdA_ox, CdA_fuel): given values, or calibrated to the design point at ignition.
+
+    At the design point the chamber pressure is Pc = mdot * c* / A_t, so each
+    injector's pressure drop is (feed pressure - Pc), and SPI gives
+    CdA = mdot_side / sqrt(2 * rho * dP).
+    """
+    if cfg.CdA_ox is not None and cfg.CdA_fuel is not None:
+        return cfg.CdA_ox, cfg.CdA_fuel
+    T0 = ox_initial_temperature(cfg, props)
+    Pc = cfg.design_mdot * cfg.c_star / cfg.throat_area
+    mdot_f = cfg.design_mdot / (1.0 + cfg.design_OF)
+    mdot_ox = cfg.design_mdot - mdot_f
+    P_fuel = (cfg.ox_fill_pressure - cfg.piston_dp) if cfg.fuel_feed == 'piston' else cfg.fuel_pressure
+    dP_ox, dP_f = cfg.ox_fill_pressure - Pc, P_fuel - Pc
+    if dP_ox <= 0 or dP_f <= 0:
+        raise ValueError('Feed pressure is below the design chamber pressure; cannot calibrate CdA')
+    CdA_ox = cfg.CdA_ox or mdot_ox / math.sqrt(2 * props('rho_l', T0) * dP_ox)
+    CdA_f = cfg.CdA_fuel or mdot_f / math.sqrt(2 * cfg.fuel_density * dP_f)
+    return CdA_ox, CdA_f
