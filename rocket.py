@@ -5,6 +5,9 @@ import pandas as pd
 
 # ---thrust---
 times = [0.05, 8.50, 8.51, 9.50] # time t corresponding the thrust
+# Match the C++ example nozzle exit diameter (m).
+nozzle_exit_diameter = 0.1241
+nozzle_exit_area = np.pi * nozzle_exit_diameter**2 / 4.0
 thrust_points = [8133, 7603, 1200, 1000] # thrust in N
 propellant_points = [44, 5, 5, 0] # remaining propellant in kg
 
@@ -72,10 +75,12 @@ def ambient_thrust_correction(thrust, z, A_exit, p_ref=101325.0):
         return 0.0  # No thrust correction after burnout.
 
     return max(0.0, thrust + (p_ref - ambient_pressure(z)) * A_exit)
+
 # ---solver for RK4 method---
 def derivatives(t, state):
     z, v = state
     thrust = np.interp(t, times, thrust_points, left=0.0, right=0.0)
+    thrust = ambient_thrust_correction(thrust, z, nozzle_exit_area)
     mass = dry_mass + np.interp(t, times, propellant_points, left=0.0, right=0.0)
     drag = 0.0
     if v > 0.0:
@@ -105,6 +110,7 @@ while t < time_limit:
     mach = mach_number(z, v)
     mass = dry_mass + np.interp(t, times, propellant_points, left=0.0, right=0.0)
     thrust = np.interp(t, times, thrust_points, left=0.0, right=0.0)
+    thrust = ambient_thrust_correction(thrust, z, nozzle_exit_area)
     history.append((
         t, z, v, derivatives(t, state)[1], mass, cg, mach,
         0.5 * density * v**2, density,
@@ -123,7 +129,7 @@ flight_data = pd.DataFrame(history, columns=[
     "mach", "q", "density", "CD", "CN", "CP", "thrust", "tankPressureRatio",
 ])
 # Keep the Python output separate so it doesn't overwrite the C++ run.
-output = Path(__file__).with_name("flight_data_python.csv")
+output = Path(__file__).with_name("flight_data_python_ambient_pressure.csv")
 flight_data.to_csv(output, index=False, float_format="%.6g")
 
 
