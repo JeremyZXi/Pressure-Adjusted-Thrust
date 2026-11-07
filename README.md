@@ -22,15 +22,4 @@ python rocket.py
 | `thrust` | Thrust in N, including both tank and ambient pressure effects                                             |
 | `tankPressureRatio` | Current nitrous tank pressure divided by its initial pressure. `1.0` means 100% of the starting pressure. |
 
-As for the rest of the files, we don't need to run them separately:
-
-| File | What it does |
-| --- | --- |
-| `engine_history.py` | Works out how pressure and propellant mass change during the burn. |
-| `ox_tank.py` | Calculates the pressure in the nitrous tank. |
-| `fuel_tank.py` | Calculates the pressure that pushes fuel out of its tank. |
-| `injector.py` | Calculates how much fuel and nitrous flow into the engine. |
-| `nozzle.py` | Calculates how much thrust the nozzle produces for a given chamber and air pressure. |
-| `integrator.py` | Advances the engine model one time step at a time. |
-| `n2o_props.py` and `n2o_saturation.csv` | Look up nitrous properties, such as pressure and density. |
-| `Eureka3_Machnum_RASAero2_sim.CSV` | Gives the simulator the drag coefficient at different speeds. |
+As for the rest of the files, we don't need to run them separately
