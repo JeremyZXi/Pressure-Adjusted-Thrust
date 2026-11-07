@@ -80,7 +80,17 @@ def cd(z, v):
     return np.interp(mach_number(z, v), mach_table, cd_table)
 
 def ambient_pressure(z):
-    """Ambient air pressure (Pa) at altitude z (m)."""
+    """Ambient air pressure (Pa) at altitude z (m).
+    Parameters
+    ----------
+    z : float
+        Current altitude of the rocket in meter
+    Returns
+    -------
+    float
+        ambient air pressure in Pa
+    """
+
     h = max(0.0, z)
     R_air = 287.05
     g0 = 9.80665
@@ -99,13 +109,39 @@ def ambient_pressure(z):
 
 
 def rho(z):
-    """Air density (kg/m³) at altitude z (m)."""
+    """Air density (kg/m^2) at altitude z (m).
+    Parameters
+    ----------
+    z : float
+        Current altitude of the rocket in meter
+    Returns
+    -------
+    float
+        Air density in kg/m^3
+    """
     h = max(0.0, z)
     temperature = 288.15 - 0.0065 * h if h <= 11_000 else 216.65
     return ambient_pressure(h) / (287.05 * temperature)
 
 
 def ambient_thrust_correction(thrust, z, A_exit, p_ref=101325.0):
+    """Apply ambient thrust correction
+    Parameters
+    ----------
+    thrust : float
+        thrust from the thrust curve in N
+    z : float
+        Current altitude of the rocket in meter
+    A_exit : float
+        Nozzle exit area in m^2
+    p_ref : float
+        reference pressure in Pa, by default is 1 atm
+    Returns
+    -------
+    float
+        adjusted thrusts in N
+    """
+
     if thrust <= 0.0:
         return 0.0  # No thrust correction after burnout.
 
