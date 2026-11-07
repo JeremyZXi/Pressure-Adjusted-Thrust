@@ -4,18 +4,14 @@ Tracks altitude and velocity with RK4 and exports the C++-compatible CSV.
 Engine inputs live in config.py. Residual propellant remains aboard after cutoff.
 """
 from pathlib import Path
-import sys
-
-# Support both direct IDE execution and python -m engine_model_py.rocket.
-project_root = Path(__file__).resolve().parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
 
 from engine_model_py.config import EngineConfig
 from engine_model_py.engine_history import generate_engine_history
 from engine_model_py.nozzle import thrust_coefficient
 import numpy as np
 import pandas as pd
+
+project_root = Path(__file__).resolve().parent
 
 # Engine-model input parameters live in config.py.
 cfg = EngineConfig()
@@ -175,8 +171,10 @@ flight_data = pd.DataFrame(history, columns=[
     "time", "altitude", "velocity", "acceleration", "mass", "CG",
     "mach", "q", "density", "CD", "CN", "CP", "thrust", "tankPressureRatio",
 ])
-# Keep the Python output separate so it doesn't overwrite the C++ run.
-output = Path(__file__).with_name("flight_data_python_engine.csv")
+# Save alongside the comparison data used by visualization.ipynb.
+result_folder = project_root / "result"
+result_folder.mkdir(exist_ok=True)
+output = result_folder / "flight_data.csv"
 flight_data.to_csv(output, index=False, float_format="%.6g")
 
 
@@ -187,5 +185,5 @@ print(f"  Residual propellant: {propellant_masses[-1]:.3f} kg")
 print(f"  Apogee: {flight_data['altitude'].max():.6g} m")
 print(f"  Max Velocity: {flight_data['velocity'].max():.6g} m/s")
 print(f"  Max Mach: {flight_data['mach'].max():.6g}")
-print(f"  Flight data exported to: {output.name}")
+print(f"  Flight data exported to: {output}")
 print("\nExample completed successfully!")
