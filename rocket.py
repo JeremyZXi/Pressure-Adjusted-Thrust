@@ -3,12 +3,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+"""These are all the inputs required for this simulation.
+I left them hardcoded here for now but essentially all of them are input variables
+"""
 # ---thrust---
 times = [0.05, 8.50, 8.51, 9.50] # time t corresponding the thrust
-# Match the C++ example nozzle exit diameter (m).
+thrust_points = [8133, 7603, 1200, 1000] # thrust in N
+# nozzle data
 nozzle_exit_diameter = 0.1241
 nozzle_exit_area = np.pi * nozzle_exit_diameter**2 / 4.0
-thrust_points = [8133, 7603, 1200, 1000] # thrust in N
 propellant_points = [44, 5, 5, 0] # remaining propellant in kg
 
 # --- aerodynamics ---
@@ -24,23 +27,55 @@ cn_table = straight_flight["CN"].to_numpy()
 cp_table = straight_flight["CP"].to_numpy()
 # reference area
 area = 0.03243 # m^2
-
 # time step
 dt = 0.01 # s
 
 
 def g(z):
-    """Return gravitational acceleration (m/s^2) at altitude z (m)."""
+    """Calculate the gravitational acceleration at altitude z(m)
+    Parameters
+    ----------
+    z : float
+        Current altitude of the rocket in meter
+    Returns
+    -------
+    float
+        the gravitational acceleration at altitude z(m) in m/s^2
+    """
     g0 = 9.80665
     earth_radius = 6_371_000.0
     return g0 * (earth_radius / (earth_radius + z)) ** 2
 def mach_number(z, v):
-    air_temperature = 288.15 - 0.0065 * np.clip(z, 0, 11_000)
-    speed_of_sound = np.sqrt(1.4 * 287.05 * air_temperature)
+    """Calculate current mach number
+    Parameters
+    ----------
+    z : float
+        Current altitude of the rocket in meter
+    v : float
+        Current velocity of the rocket in m/s
+    Returns
+    -------
+    float
+        speed v in mach at some height z
+    """
+    air_temperature = 288.15 - 0.0065 * np.clip(z, 0, 11_000) # calculate the current air temperature
+    speed_of_sound = np.sqrt(1.4 * 287.05 * air_temperature) # calculate the sound of speed at current height
     return v / speed_of_sound
 
 # drag coefficient
 def cd(z, v):
+    """Look up the drag coefficient
+    Parameters
+    ----------
+    z : float
+        Current altitude of the rocket in meter
+    v : float
+        Current velocity of the rocket in m/s
+    Returns
+    -------
+    float
+        Drag coefficient at altitude z and velocity v with 0 attack angle
+    """
     # interpolate from the lookup table
     return np.interp(mach_number(z, v), mach_table, cd_table)
 
