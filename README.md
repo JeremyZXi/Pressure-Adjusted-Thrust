@@ -7,7 +7,7 @@ Run this from the project folder(or just run that file:
 python rocket.py
 ```
 
-- **`rocket.py`** simulates the flight and saves `result/flight_data.csv`. Change rocket inputs like dry mass here.
+- **`rocket.py`** simulates the flight and saves `result/flight_data.csv`, which contains the thrust curve and other flight data. Change rocket inputs like dry mass here.
 - **`visualization.ipynb`** compares the flight runs in `result/`. Open it from the project folder.
 - **`engine_model_py/config.py`** holds engine inputs like the starting fuel and nitrous masses.
 
