@@ -1,95 +1,72 @@
+"""Vertical 1D flight driven by the liquid-feed engine model.
+
+Tracks altitude and velocity with RK4 and exports the C++-compatible CSV.
+Engine inputs live in config.py. Residual propellant remains aboard after cutoff.
+"""
 from pathlib import Path
 
+from engine_model_py.config import EngineConfig
+from engine_model_py.engine_history import generate_engine_history
+from engine_model_py.nozzle import thrust_coefficient
 import numpy as np
 import pandas as pd
 
-"""These are all the inputs required for this simulation.
-I left them hardcoded here for now but essentially all of them are input variables
-"""
-# ---thrust---
-times = [0.05, 8.50, 8.51, 9.50] # time t corresponding the thrust
-thrust_points = [8133, 7603, 1200, 1000] # thrust in N
-# nozzle data
-nozzle_exit_diameter = 0.1241
-nozzle_exit_area = np.pi * nozzle_exit_diameter**2 / 4.0
-propellant_points = [44, 5, 5, 0] # remaining propellant in kg
+project_root = Path(__file__).resolve().parent
+
+# Engine-model input parameters live in config.py.
+cfg = EngineConfig()
+ignition_time = 0.05
+engine_table = generate_engine_history(cfg)
+engine_times = engine_table[:, 0] + ignition_time
+chamber_pressures = engine_table[:, 1]
+propellant_masses = engine_table[:, 2]
+tank_pressures = engine_table[:, 3]
+cutoff_time = engine_times[-1]
 
 # --- aerodynamics ---
 dry_mass = 46.7 # kg
 cg = 2.33  # m, center of gravity, assumed the same for both dry mass and propellant
-# create a lookup table to get corresponding Cd under certain velocity in vertical motion
-aero = pd.read_csv(Path(__file__).with_name("Eureka3_Machnum_RASAero2_sim.CSV"))
+# Aerodynamic coefficients at zero angle of attack, indexed by Mach number.
+aero = pd.read_csv(project_root / "Eureka3_Machnum_RASAero2_sim.CSV")
 straight_flight = aero.loc[aero["Alpha"] == 0, ["Mach", "CD", "CN", "CP"]]
 straight_flight = straight_flight.sort_values("Mach")
 mach_table = straight_flight["Mach"].to_numpy()
 cd_table = straight_flight["CD"].to_numpy()
 cn_table = straight_flight["CN"].to_numpy()
 cp_table = straight_flight["CP"].to_numpy()
-# reference area
+# Aerodynamic reference area.
 area = 0.03243 # m^2
-# time step
+# Flight integration timestep.
 dt = 0.01 # s
 
 
 def g(z):
-    """Calculate the gravitational acceleration at altitude z(m)
-    Parameters
-    ----------
-    z : float
-        Current altitude of the rocket in meter
-    Returns
-    -------
-    float
-        the gravitational acceleration at altitude z(m) in m/s^2
-    """
+    """Gravitational acceleration [m/s^2] at altitude z [m], using inverse-square gravity."""
     g0 = 9.80665
     earth_radius = 6_371_000.0
     return g0 * (earth_radius / (earth_radius + z)) ** 2
+
 def mach_number(z, v):
-    """Calculate current mach number
-    Parameters
-    ----------
-    z : float
-        Current altitude of the rocket in meter
-    v : float
-        Current velocity of the rocket in m/s
-    Returns
-    -------
-    float
-        speed v in mach at some height z
-    """
-    air_temperature = 288.15 - 0.0065 * np.clip(z, 0, 11_000) # calculate the current air temperature
-    speed_of_sound = np.sqrt(1.4 * 287.05 * air_temperature) # calculate the sound of speed at current height
+    """Signed Mach number for velocity v [m/s] at altitude z [m]."""
+    air_temperature = 288.15 - 0.0065 * np.clip(z, 0, 11_000)  # Air temperature [K].
+    speed_of_sound = np.sqrt(1.4 * 287.05 * air_temperature)  # Speed of sound [m/s].
     return v / speed_of_sound
 
 # drag coefficient
 def cd(z, v):
-    """Look up the drag coefficient
-    Parameters
-    ----------
-    z : float
-        Current altitude of the rocket in meter
-    v : float
-        Current velocity of the rocket in m/s
-    Returns
-    -------
-    float
-        Drag coefficient at altitude z and velocity v with 0 attack angle
-    """
+    """Drag coefficient at zero angle of attack, interpolated from the Mach table.
+
+    z : altitude [m]
+    v : vertical velocity [m/s]
+    Returns dimensionless C_D."""
     # interpolate from the lookup table
     return np.interp(mach_number(z, v), mach_table, cd_table)
 
 def ambient_pressure(z):
-    """Ambient air pressure (Pa) at altitude z (m).
-    Parameters
-    ----------
-    z : float
-        Current altitude of the rocket in meter
-    Returns
-    -------
-    float
-        ambient air pressure in Pa
-    """
+    """Ambient air pressure [Pa] at altitude z [m].
+
+    Uses a linear temperature lapse rate below 11 km and a constant
+    temperature above it. Negative altitude uses sea-level pressure."""
 
     h = max(0.0, z)
     R_air = 287.05
@@ -109,59 +86,52 @@ def ambient_pressure(z):
 
 
 def rho(z):
-    """Air density (kg/m^2) at altitude z (m).
-    Parameters
-    ----------
-    z : float
-        Current altitude of the rocket in meter
-    Returns
-    -------
-    float
-        Air density in kg/m^3
-    """
+    """Air density [kg/m^3] at altitude z [m], from rho = P / (R_air * T)."""
     h = max(0.0, z)
     temperature = 288.15 - 0.0065 * h if h <= 11_000 else 216.65
     return ambient_pressure(h) / (287.05 * temperature)
 
 
-def ambient_thrust_correction(thrust, z, A_exit, p_ref=101325.0):
-    """Apply ambient thrust correction
-    Parameters
-    ----------
-    thrust : float
-        thrust from the thrust curve in N
-    z : float
-        Current altitude of the rocket in meter
-    A_exit : float
-        Nozzle exit area in m^2
-    p_ref : float
-        reference pressure in Pa, by default is 1 atm
-    Returns
-    -------
-    float
-        adjusted thrusts in N
-    """
+def engine_thrust(t, z):
+    """Nozzle thrust [N] at simulation time t [s] and altitude z [m].
 
-    if thrust <= 0.0:
-        return 0.0  # No thrust correction after burnout.
+    Interpolates chamber pressure from the engine history and includes
+    ambient pressure through C_F. Returns zero before ignition and
+    at or after liquid-feed cutoff."""
+    if t < ignition_time or t >= cutoff_time:
+        return 0.0
+    pc = np.interp(t, engine_times, chamber_pressures)
+    cf = thrust_coefficient(pc, ambient_pressure(z), cfg.expansion_ratio, cfg.gamma)
+    return max(0.0, cfg.cf_efficiency * cf * pc * cfg.throat_area)
 
-    return max(0.0, thrust + (p_ref - ambient_pressure(z)) * A_exit)
-
-# ---solver for RK4 method---
+# Flight equations and integration.
 def derivatives(t, state):
+    """Flight-state derivative [v, a] for RK4.
+
+    t     : simulation time [s]
+    state : numpy array [altitude (m), vertical velocity (m/s)]
+    Returns [dz/dt (m/s), dv/dt (m/s^2)]. Includes thrust, upward-flight
+    drag and weight, with pad support before ignition."""
     z, v = state
-    thrust = np.interp(t, times, thrust_points, left=0.0, right=0.0)
-    thrust = ambient_thrust_correction(thrust, z, nozzle_exit_area)
-    mass = dry_mass + np.interp(t, times, propellant_points, left=0.0, right=0.0)
+    thrust = engine_thrust(t, z)
+    mass = dry_mass + np.interp(t, engine_times, propellant_masses)
     drag = 0.0
     if v > 0.0:
         dynamic_pressure = 0.5 * rho(z) * v**2
         drag = dynamic_pressure * area * cd(z, v)
     weight = mass * g(z)
     a = (thrust - drag - weight) / mass
+    if t < ignition_time and z <= 0.0 and v <= 0.0:
+        a = 0.0  # Pad supports the fully loaded rocket until ignition.
     return np.array([v, a])  # [dz/dt, dv/dt]
 
 def rk4_step(t, state, dt):
+    """Advance [altitude, velocity] by one fourth-order Runge-Kutta step.
+
+    t     : current time [s]
+    state : numpy array [altitude (m), vertical velocity (m/s)]
+    dt    : timestep [s]
+    Returns the new state after dt."""
     k1 = derivatives(t, state)
     k2 = derivatives(t + dt / 2, state + dt * k1 / 2)
     k3 = derivatives(t + dt / 2, state + dt * k2 / 2)
@@ -171,27 +141,29 @@ def rk4_step(t, state, dt):
 
 t = 0.0
 state = np.array([0.0, 0.0])  # [altitude, velocity], used to record current state during the loop
-history = [] # keep
+history = []  # One flight snapshot per timestep.
 
 time_limit = 100
-# run the program for time_limit seconds
+# Stop at apogee or the time limit.
 while t < time_limit:
     z, v = state
     density = rho(z)
     mach = mach_number(z, v)
-    mass = dry_mass + np.interp(t, times, propellant_points, left=0.0, right=0.0)
-    thrust = np.interp(t, times, thrust_points, left=0.0, right=0.0)
-    thrust = ambient_thrust_correction(thrust, z, nozzle_exit_area)
+    mass = dry_mass + np.interp(t, engine_times, propellant_masses)
+    thrust = engine_thrust(t, z)
     history.append((
         t, z, v, derivatives(t, state)[1], mass, cg, mach,
         0.5 * density * v**2, density,
         np.interp(mach, mach_table, cd_table),
         np.interp(mach, mach_table, cn_table),
         np.interp(mach, mach_table, cp_table),
-        thrust, 1.0,  # Tank correction disabled.
+        thrust, np.interp(t, engine_times, tank_pressures) / tank_pressures[0],
     ))
     if t > 0.1 and (v < 0.0 or z < 0.0):
         break
+    if t < ignition_time:
+        t = min(t + dt, ignition_time)
+        continue
     state = rk4_step(t, state, dt)
     t += dt
 
@@ -199,15 +171,19 @@ flight_data = pd.DataFrame(history, columns=[
     "time", "altitude", "velocity", "acceleration", "mass", "CG",
     "mach", "q", "density", "CD", "CN", "CP", "thrust", "tankPressureRatio",
 ])
-# Keep the Python output separate so it doesn't overwrite the C++ run.
-output = Path(__file__).with_name("flight_data_python_ambient_pressure.csv")
+# Save alongside the comparison data used by visualization.ipynb.
+result_folder = project_root / "result"
+result_folder.mkdir(exist_ok=True)
+output = result_folder / "flight_data.csv"
 flight_data.to_csv(output, index=False, float_format="%.6g")
 
 
-# console output
-print("\nSimulation Results:")
+# Console summary.
+print("\nSimulation Results (engine model; illustrative inputs):")
+print(f"  Liquid-feed cutoff: {cutoff_time:.3f} s")
+print(f"  Residual propellant: {propellant_masses[-1]:.3f} kg")
 print(f"  Apogee: {flight_data['altitude'].max():.6g} m")
 print(f"  Max Velocity: {flight_data['velocity'].max():.6g} m/s")
 print(f"  Max Mach: {flight_data['mach'].max():.6g}")
-print(f"  Flight data exported to: {output.name}")
+print(f"  Flight data exported to: {output}")
 print("\nExample completed successfully!")
