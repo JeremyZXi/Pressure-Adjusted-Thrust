@@ -1,19 +1,8 @@
-"""Fuel tank models. Liquid fuel barely compresses, so its density is constant and
-the only thing that changes is how much is left.
+"""Fuel tank models (IPA density treated as constant).
 
-Two feed architectures:
-
-PistonFuelTank (Eureka default)
-    A free piston separates N2O gas the IPA. N2O pressure pushes
-    the piston, so the fuel is fed at the N2O tank pressure, minus whatever
-    pressure the piston seals eat through friction. Two consequences the engine
-    model must include:
-      * P_fuel follows P_tank as the N2O blows down 
-      * every m^3 of IPA that leaves is replaced by N2O vapor, so the N2O volume
-        grows and the N2O does work equal to P*dV pushing the piston
-
-RegulatedFuelTank
-    Fuel held at a constant set pressure by a regulated pressurant (N2 / He).
+PistonFuelTank: N2O gas pushes a free piston, so P_fuel = P_tank - piston friction,
+and the N2O volume grows as IPA leaves (the N2O does work P*dV on the piston).
+RegulatedFuelTank: fuel held at a constant set pressure.
 """
 
 
