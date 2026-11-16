@@ -92,7 +92,7 @@ class EquilibriumOxTank:
             u_v = self.props('u_v', T)
             return (m_l * u_l) + (m_v * u_v) - U   # if this = 0 we have the correct T
         lo, hi = self.props.T_min, self.props.T_max
-        while hi - lo > 1e-6:
+        while hi - lo > 1e-6: #if its less than this its basically zero
             mid = 0.5 * (lo + hi)
             if f(mid) > 0: #the root must be in the lower half 
                 hi = mid

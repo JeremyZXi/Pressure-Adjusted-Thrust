@@ -1,14 +1,7 @@
-"""Ideal converging-diverging nozzle: thrust coefficient C_F.
+"""Ideal nozzle thrust coefficient: F = C_F * Pc * A_throat.
 
-Thrust = C_F * Pc * A_throat. C_F packs together two contributions:
-  * momentum: exhaust leaving fast, which depends only on gamma and the expansion
-    ratio eps = A_exit / A_throat
-  * pressure: (P_exit - P_ambient) * A_exit. This is the same term the C++ sim
-    adds by hand as (P_ref - P_atm) * A_exit
-
-Assumes 1D isentropic flow with constant gamma, no flow separation.
-(A strongly over-expanded nozzle at low Pc would really separate, so the
-pressure term is too pessimistic late in the burn.)
+C_F includes the (P_exit - P_ambient) * A_exit term, so thrust rises with altitude.
+Assumes 1D isentropic flow, constant gamma, no flow separation.
 """
 from functools import lru_cache
 import math
