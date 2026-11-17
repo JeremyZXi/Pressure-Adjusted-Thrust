@@ -4,6 +4,8 @@ Tracks altitude and velocity with RK4 and exports the C++-compatible CSV.
 Engine inputs live in config.py. Residual propellant remains aboard after cutoff.
 """
 from pathlib import Path
+import argparse
+from ork_mass import load_ork_mass_data
 
 from engine_model_py.config import EngineConfig
 from engine_model_py.engine_history import generate_engine_history
@@ -12,6 +14,16 @@ import numpy as np
 import pandas as pd
 
 project_root = Path(__file__).resolve().parent
+
+# Optional path: edit this value or run python rocket.py --ork /path/to/vehicle.ork.
+# Relative paths are resolved beside this script.
+ork_path = None
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--ork', help='OpenRocket design supplying structural dry mass and CG')
+    args = parser.parse_args()
+    if args.ork:
+        ork_path = args.ork
 
 # Engine-model input parameters live in config.py.
 cfg = EngineConfig()
@@ -25,7 +37,23 @@ cutoff_time = engine_times[-1]
 
 # --- aerodynamics ---
 dry_mass = 46.7 # kg
-cg = 2.33  # m, center of gravity, assumed the same for both dry mass and propellant
+cg = 2.33  # m, default dry CG from nose
+propellant_cg = 2.33  # m, assumed fixed; set to your tank/propellant CG
+if ork_path is not None:
+    ork_file = Path(ork_path).expanduser()
+    if not ork_file.is_absolute():
+        ork_file = project_root / ork_file
+    ork_mass_data = load_ork_mass_data(ork_file)
+    dry_mass = ork_mass_data['mass_kg']
+    cg = ork_mass_data['cg_m']
+    print(f'OpenRocket structural mass: {dry_mass:.6g} kg; dry CG: {cg:.6g} m')
+
+
+def rocket_cg(time):
+    """Combined dry-structure and remaining-propellant CG, measured from nose."""
+    prop_mass = np.interp(time, engine_times, propellant_masses)
+    return (dry_mass * cg + prop_mass * propellant_cg) / (dry_mass + prop_mass)
+
 # Aerodynamic coefficients at zero angle of attack, indexed by Mach number.
 aero = pd.read_csv(project_root / "Eureka3_Machnum_RASAero2_sim.CSV")
 straight_flight = aero.loc[aero["Alpha"] == 0, ["Mach", "CD", "CN", "CP"]]
@@ -152,7 +180,7 @@ while t < time_limit:
     mass = dry_mass + np.interp(t, engine_times, propellant_masses)
     thrust = engine_thrust(t, z)
     history.append((
-        t, z, v, derivatives(t, state)[1], mass, cg, mach,
+        t, z, v, derivatives(t, state)[1], mass, rocket_cg(t), mach,
         0.5 * density * v**2, density,
         np.interp(mach, mach_table, cd_table),
         np.interp(mach, mach_table, cn_table),
